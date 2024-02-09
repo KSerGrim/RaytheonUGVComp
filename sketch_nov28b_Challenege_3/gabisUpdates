@@ -1,0 +1,243 @@
+#include <PID_v1.h>
+
+// Motor A (Left motor)
+const int motorAPWM = A0; // PWM pin for motor A speed control
+const int motorA1 = 6;   // Motor A direction pin 1
+const int motorA2 = 10;   // Motor A direction pin 2
+const int encoderA1 = A4; // Encoder A signal pin 1
+const int encoderA2 = A5; // Encoder A signal pin 2
+
+// Motor B (Right motor)
+const int motorBPWM = A2; // PWM pin for motor B speed control
+const int motorB1 = 9;   // Motor B direction pin 1
+const int motorB2 = 5;   // Motor B direction pin 2
+const int encoderB1 = 2; // Encoder B signal pin 1
+const int encoderB2 = 3; // Encoder B signal pin 2
+
+const float yardsToMiles = 1.0 / 1760.0; // Conversion factor from yards to miles
+const float speedMPH = 0.17; // Speed in miles per hour
+const float secondsPerYard = 12.0; // Time to travel one yard in seconds
+
+float pulsesPerRevolution = 540.0; // Change this based on your encoder specifications
+float distancePerRevolution = 5.0; // Change this based on your setup
+float encoderPulses = 48.0; // Updated based on the encoder specifications
+
+// ... (previous unchanged code remains here)
+/* Use this formula to calculate distance
+Distance = (Pulses per Revolution / Encoder Pulses) * Distance per Revolution(Circumference of Wheel)
+
+Datasheet
+✔Product type: DC Gear motor with two-channel Hall effect encoder; Rated Voltage: 12V; No-Load Speed: 130RPM; No-Load Current: ≤ 0.15A; Rated Torque: 1.2kg.cm;
+✔Main Body Dimensions: 68 x 25mm / 2.68in x 0.99in (L*D); Out Shaft Dimensions: 11 x 4mm / 0.433 x 0.1575in (L*D) with 10 x 0.5mm / 0.39 * 0.017inches flat cut off;
+✔Single Output 540 Pulses Per Revolution: Gear Reduction Ratio: 1/45, Each Loop Output Pulses: 12PPR 45*12=540PPR;
+
+The rear of the motor is equipped with a dual channel Holzer effect encoder, AB dual output, single circuit per cycle pulse 12PPR, double down the road, a total output of 48CPR. Phase difference 90 degrees.
+The two-channel Hall effect encoder is used to sense the rotation of a magnetic disk on a rear protrusion of the motor shaft. The quadrature encoder provides a resolution of 48counts per revolution of the motor shaft.
+To compute the counts per revolution of the gearbox output, multiply the gear ratio by 48.
+
+New prototype wheel sizing: ~5cm
+prototype wheel sizing: 4cm
+*/
+
+// Interrupt service routines for encoder counts
+volatile long encoderACounts = 0;
+volatile long encoderBCounts = 0;
+
+// PID parameters
+double Setpoint = 0; // Target speed in counts per second (adjust based on your encoder datasheet)
+double InputA, OutputA;
+double InputB, OutputB;
+PID motorPID_A(&InputA, &OutputA, &Setpoint, 0.2, 0.004, 0.1, DIRECT); // Need to adjust these PID values
+PID motorPID_B(&InputB, &OutputB, &Setpoint, 0.2, 0.004, 0.1, DIRECT);
+
+// Time variables for speed and distance calculation
+unsigned long prevMillis = 0;
+const unsigned long intervalMillis = 100; // Update speed and distance every 100 milliseconds
+
+// Variables for speed and distance
+double speedSecondsPerYard = 8.4;
+double distanceYards = 0.0; // Initialize distance to zero
+
+// Turning times for each lane (in milliseconds)
+const unsigned long turningTimes[] = {30000, 100000, 170000, 240000}; // Adjust based on swim lane specifications
+
+// Moisture detection system flag
+bool moistureDetectionEnabled = true;
+
+void setup() {
+  // Motor setup
+  pinMode(motorAPWM, OUTPUT);
+  pinMode(motorA1, OUTPUT);
+  pinMode(motorA2, OUTPUT);
+  pinMode(encoderA1, INPUT);
+  pinMode(encoderA2, INPUT);
+
+  pinMode(motorBPWM, OUTPUT);
+  pinMode(motorB1, OUTPUT);
+  pinMode(motorB2, OUTPUT);
+  pinMode(encoderB1, INPUT);
+  pinMode(encoderB2, INPUT);
+
+  // Attach interrupts for encoder readings
+  attachInterrupt(digitalPinToInterrupt(encoderA1), countEncoderA, RISING);
+  attachInterrupt(digitalPinToInterrupt(encoderB1), countEncoderB, RISING);
+
+  // Initialize PID
+  motorPID_A.SetMode(AUTOMATIC);
+  motorPID_B.SetMode(AUTOMATIC);
+
+  // Set initial motor direction to be standby
+  stopMotors();
+}
+
+void loop() {
+  // Calculate elapsed time since the last update
+  unsigned long currentMillis = millis();
+  unsigned long elapsedMillis = currentMillis - prevMillis;
+
+  if (elapsedMillis >= intervalMillis) {
+    // Calculate speed (counts per second) based on encoder counts
+    InputA = getCountsPerSecond(encoderACounts);
+    InputB = getCountsPerSecond(encoderBCounts);
+
+    // Calculate average speed for both motors
+    speedSecondsPerYard = (InputA + InputB) / 2.0;
+
+    // Calculate distance traveled based on the average speed
+    distanceYards += speedSecondsPerYard * (elapsedMillis / 1000.0);
+
+    // Check turning conditions
+    checkTurning(currentMillis);
+
+    // Check for finish line and disable moisture detection system
+    checkFinishLine();
+
+    // Update previous millis for the next interval
+    prevMillis = currentMillis;
+
+    // Setpoint is the target speed in counts per second
+    Setpoint = calculateSetpoint();
+
+    // Update PID and adjust motor speeds
+    motorPID_A.Compute();
+    motorPID_B.Compute();
+
+    // Apply the calculated PWM values to control motor speed
+    analogWrite(motorAPWM, abs(OutputA));
+    analogWrite(motorBPWM, abs(OutputB));
+
+    // Print or use speedYardsPerSecond and distanceYards as needed
+    Serial.print("Speed: ");
+    Serial.print(speedSecondsPerYard);
+    Serial.print(" yards/second, Distance: ");
+    Serial.print(distanceYards);
+    Serial.println(" yards");
+  }
+}
+
+void checkTurning(unsigned long currentTime) {
+  for (int i = 0; i < 4; i++) {
+    if (currentTime >= turningTimes[i] && !isTurning) {
+      // Perform turn for the UGV in lane i
+      performTurn();
+      isTurning = true;
+    }
+  }
+}
+
+void performTurn() {
+  // Implement the turning logic here
+  // For example, stop the motors, perform a 90-degree turn to the right,
+  // move forward 2 yards, perform a 90-degree turn to the left,
+  // then resume maintaining a straight course.
+
+  // Adjust the motors, speeds, and delays based on your UGV's characteristics.
+  stopMotors();
+  delay(1000); // Pause for stability
+  turnRight();
+  delay(1500); // Adjust for the time needed to make a 90-degree turn
+  stopMotors();
+  delay(1000); // Pause for stability
+  //moveMotors(2);
+  delay(2000); // Move forward 2 yards
+  stopMotors();
+  delay(1000); // Pause for stability
+  turnLeft();
+  delay(1500); // Adjust for the time needed to make a 90-degree turn
+  stopMotors();
+  delay(1000); // Pause for stability
+  // Resume maintaining a straight course
+  isTurning = false;
+}
+
+void moveMotors(float distanceYards) {
+  // Calculate the time required to travel the given distance at the specified speed
+  float timeSeconds = distanceYards * secondsPerYard / speedMPH;
+
+  // Set the motors to move forward
+  digitalWrite(motorA1, HIGH);
+  digitalWrite(motorA2, LOW);
+  digitalWrite(motorB1, HIGH);
+  digitalWrite(motorB2, LOW);
+
+  // Set the motor speeds
+  analogWrite(motorAPWM, 255);
+  analogWrite(motorBPWM, 255);
+
+  // Wait for the calculated time
+  delay(timeSeconds * 1000);
+
+  // Stop the motors
+  stopMotors();
+}
+
+void stopMotors() {
+  // Turn off motor PWM signals
+  analogWrite(motorAPWM, 0);
+  analogWrite(motorBPWM, 0);
+
+  // Set motor direction pins to stop
+  digitalWrite(motorA1, LOW);
+  digitalWrite(motorA2, LOW);
+  digitalWrite(motorB1, LOW);
+  digitalWrite(motorB2, LOW);
+}
+
+void turnRight(){
+  // Set motor direction pins to turn right
+  digitalWrite(motorA1, HIGH);
+  digitalWrite(motorA2, LOW);
+  digitalWrite(motorB1, LOW);
+  digitalWrite(motorB2, HIGH);
+}
+
+void turnLeft(){
+  // Set motor direction pins to turn left
+  digitalWrite(motorA1, LOW);
+  digitalWrite(motorA2, HIGH);
+  digitalWrite(motorB1, HIGH);
+  digitalWrite(motorB2, LOW);
+}
+
+void countEncoderA() {
+  encoderACounts++;
+}
+
+void countEncoderB() {
+  encoderBCounts++;
+}
+
+// Function to calculate speed in counts per second
+double getCountsPerSecond(long counts) {
+  // Time interval for speed calculation (in seconds)
+  double interval = 0.1; // Adjust as needed
+
+  return counts / interval;
+}
+
+// Function to calculate PID Setpoint based on desired speed
+double calculateSetpoint() {
+  // Convert desired speed to counts per second
+  double desiredSpeed = speedMPH * 1760 / 3600.0 / distancePerRevolution * encoderPulses;
+  return desiredSpeed;
+}
