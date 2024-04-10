@@ -728,9 +728,9 @@ void autonomousSequence() {
     while (millis() - currentTime <= durationX) {
         moveForward(); // Assuming moveForward function moves the UGV at a constant speed
     }
+    stopMotors();
 }
 
 
-
-  
+}
 }
