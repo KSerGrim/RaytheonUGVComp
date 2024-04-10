@@ -676,19 +676,6 @@ void printToPython() {
   Serial.println();
 }
 
-//idk girl!
-// // Turn right @specific times
-// void turnRight() {
-//   Setpoint_LeftTracks=1.5;
-//   Setpoint_RightTracks= 0;
-// }
-// // Turn left @specific times
-// void turnLeft() {
-//   Setpoint_RightTracks=1.5;
-//   Setpoint_LeftTracks=0;
-// }
-
-
 // Autonomous sequence to follow the specified course
 void autonomousSequence() {
     unsigned long startTime = millis(); // Start time in milliseconds
@@ -697,6 +684,9 @@ void autonomousSequence() {
     const float speed = 0.26; // Change based on challenge
     const unsigned long millisPerYard = (unsigned long)((3600.0 / speed) * 1000.0); // Milliseconds per yard at the given speed
     unsigned long durationX = 50 * millisPerYard; // Change the 50 yards based on the challenge 
+    currentAngle= compass.getAzimuth();
+    leftTurnLimit = currantAngle-90;
+    rightTurnLimit = currentAngle + 90;
 
     // Wait for 90 seconds
     while (millis() - startTime <= straightDuration) {
@@ -732,5 +722,4 @@ void autonomousSequence() {
 }
 
 
-}
 }
